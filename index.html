@@ -783,17 +783,18 @@ envelopeStage.addEventListener('click', () => {
     playBgMusic();
     document.getElementById('music-btn').classList.add('visible');
     envelopeStage.classList.add('opened');
-    // Если картинки уже успели предзагрузиться (обычно да, за то время,
-    // пока летал конверт) — startExplosion запустится мгновенно.
-    // Если нет — подождём буквально доли секунды, вместо того чтобы
-    // грузить всё разом прямо во время анимации.
     imageLoadPromise.then(startExplosion);
     playSparkle();
-    setTimeout(() => {
-      window.scrollTo(0, 0);
-      scrollContent.classList.add('visible');
-      initScrollAnimations();
-    }, 3600);
+    // Canvas explosion handles content appearance itself;
+    // DOM explosion needs manual trigger.
+    const isMobile = window.innerWidth < 768;
+    if (!isMobile) {
+      setTimeout(() => {
+        window.scrollTo(0, 0);
+        scrollContent.classList.add('visible');
+        initScrollAnimations();
+      }, 3600);
+    }
   }, 500);
 });
 
@@ -805,11 +806,132 @@ function startExplosion() {
   const vh = window.innerHeight;
   const isMobile = vw < 768;
 
-  // Adjust density for mobile — крупнее частицы, но их меньше:
-  // экран покрывается так же полно, а число DOM-узлов/декодирований
-  // падает почти вдвое (было ~90-100 на телефоне, стало ~50-60)
-  const flowerSize = isMobile ? 190 : 160;
-  const overlap = isMobile ? 0.5 : 0.6;
+  if (isMobile) {
+    startCanvasExplosion(vw, vh, cx, cy);
+  } else {
+    startDomExplosion(vw, vh, cx, cy);
+  }
+}
+
+// ===== CANVAS EXPLOSION (mobile — much faster) =====
+function startCanvasExplosion(vw, vh, cx, cy) {
+  const canvas = document.createElement('canvas');
+  canvas.width = vw;
+  canvas.height = vh;
+  canvas.style.cssText = 'position:fixed;inset:0;z-index:999;pointer-events:none;';
+  document.body.appendChild(canvas);
+  const ctx = canvas.getContext('2d');
+
+  // Preload flower images for canvas
+  const loadedImages = [];
+  let imagesReady = 0;
+  const uniqueSrcs = [...new Set(flowerImages.map(f => f.src))];
+
+  uniqueSrcs.forEach(src => {
+    const img = new Image();
+    img.onload = () => { imagesReady++; };
+    img.onerror = () => { imagesReady++; };
+    img.src = src;
+    loadedImages.push(img);
+  });
+
+  const flowerSize = 130;
+  const count = isMobile ? 45 : 60;
+  const flowers = [];
+
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const dist = 50 + Math.random() * Math.max(vw, vh) * 0.7;
+    flowers.push({
+      x: cx, y: cy,
+      targetX: cx + Math.cos(angle) * dist,
+      targetY: cy + Math.sin(angle) * dist,
+      size: flowerSize * (0.6 + Math.random() * 0.6),
+      rotation: Math.random() * 360,
+      rotSpeed: (Math.random() - 0.5) * 2,
+      img: loadedImages[Math.floor(Math.random() * loadedImages.length)],
+      delay: Math.random() * 600,
+      phase: 0, // 0=waiting, 1=flying, 2=falling
+      startTime: 0,
+      sway: (Math.random() - 0.5) * 100,
+    });
+  }
+
+  let startTime = null;
+  const fillTime = 2205;
+  const fallDuration = 3605;
+
+  function animate(timestamp) {
+    if (!startTime) startTime = timestamp;
+    const elapsed = timestamp - startTime;
+
+    ctx.clearRect(0, 0, vw, vh);
+
+    flowers.forEach(f => {
+      // Determine phase
+      if (f.phase === 0 && elapsed > f.delay) {
+        f.phase = 1;
+        f.startTime = elapsed;
+      }
+      if (f.phase === 1 && elapsed > fillTime + f.delay) {
+        f.phase = 2;
+        f.startTime = elapsed;
+      }
+
+      let x, y, alpha, rot;
+
+      if (f.phase === 0) {
+        // Waiting at center
+        x = cx;
+        y = cy;
+        alpha = 0;
+        rot = 0;
+      } else if (f.phase === 1) {
+        // Flying to target
+        const t = Math.min(1, (elapsed - f.delay - f.startTime + f.delay) / 1200);
+        const ease = 1 - Math.pow(1 - t, 3);
+        x = cx + (f.targetX - cx) * ease;
+        y = cy + (f.targetY - cy) * ease;
+        alpha = Math.min(1, t * 2);
+        rot = f.rotation * ease;
+      } else {
+        // Falling
+        const t = Math.min(1, (elapsed - f.startTime) / fallDuration);
+        const ease = t * t;
+        x = f.targetX + f.sway * Math.sin(t * Math.PI);
+        y = f.targetY + vh * 1.2 * ease;
+        alpha = 1 - t;
+        rot = f.rotation + t * 180;
+      }
+
+      if (alpha <= 0 || !f.img.complete) return;
+
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.translate(x, y);
+      ctx.rotate(rot * Math.PI / 180);
+      ctx.drawImage(f.img, -f.size / 2, -f.size / 2, f.size, f.size);
+      ctx.restore();
+    });
+
+    if (elapsed < fillTime + fallDuration + 500) {
+      requestAnimationFrame(animate);
+    } else {
+      canvas.remove();
+      flowerBg.classList.add('visible');
+      window.scrollTo(0, 0);
+      scrollContent.classList.add('visible');
+      initScrollAnimations();
+    }
+  }
+
+  requestAnimationFrame(animate);
+}
+
+// ===== DOM EXPLOSION (desktop) =====
+function startDomExplosion(vw, vh, cx, cy) {
+  const flowerSize = 160;
+  const overlap = 0.6;
   const step = flowerSize * (1 - overlap);
   const cols = Math.ceil(vw / step) + 2;
   const rows = Math.ceil(vh / step) + 2;
@@ -821,17 +943,12 @@ function startExplosion() {
     for (let c = 0; c < cols; c++) {
       const el = document.createElement('div');
       el.className = 'flower-particle';
-
       const flower = pickFlower();
       const img = document.createElement('img');
       img.src = flower.src;
       img.draggable = false;
-      img.decoding = 'sync'; // картинка уже декодирована при предзагрузке
       el.appendChild(img);
-
-      if (flower.blend === 'screen') {
-        el.classList.add('blend-screen');
-      }
+      if (flower.blend === 'screen') el.classList.add('blend-screen');
 
       const sizeJitter = 0.7 + Math.random() * 0.7;
       const size = flowerSize * sizeJitter;
@@ -845,7 +962,6 @@ function startExplosion() {
 
       el.style.left = (cx - size / 2) + 'px';
       el.style.top = (cy - size / 2) + 'px';
-
       fragment.appendChild(el);
 
       const dx = targetX + size / 2 - cx;
@@ -853,22 +969,17 @@ function startExplosion() {
       const distFromCenter = Math.sqrt(dx * dx + dy * dy);
       const maxDist = Math.sqrt(cx * cx + cy * cy);
       const rotation = (Math.random() - 0.5) * 60;
-
       particles.push({ el, dx, dy, size, rotation, distFromCenter, maxDist });
     }
   }
 
   explosionContainer.appendChild(fragment);
-
   particles.sort((a, b) => a.distFromCenter - b.distFromCenter);
 
-  // Phase 1: expand from center
-  const delayStep = isMobile ? 6 : 8;
   particles.forEach((p, i) => {
     const normalizedDist = p.distFromCenter / p.maxDist;
-    const delay = normalizedDist * 800 + (i % 50) * delayStep;
+    const delay = normalizedDist * 800 + (i % 50) * 8;
     const duration = 1000 + Math.random() * 500;
-
     requestAnimationFrame(() => {
       setTimeout(() => {
         p.el.style.transition = `transform ${duration}ms cubic-bezier(0.16, 1, 0.3, 1), opacity ${duration * 0.4}ms ease`;
@@ -878,22 +989,18 @@ function startExplosion() {
     });
   });
 
-  // Phase 2: ALL flowers fall simultaneously
   const fillTime = 2205;
   const fallDuration = 3605;
   setTimeout(() => {
     particles.forEach((p) => {
       const swayX = (Math.random() - 0.5) * 140;
       const rot = p.rotation + (Math.random() - 0.5) * 180;
-
       requestAnimationFrame(() => {
         p.el.style.transition = `transform ${fallDuration}ms cubic-bezier(0.55, 0.085, 0.68, 0.53), opacity ${fallDuration * 0.6}ms ease-in`;
         p.el.style.opacity = '0';
         p.el.style.transform = `translate3d(${p.dx + swayX}px, ${p.dy + vh + 300}px, 0) rotate(${rot}deg) scale(0.7)`;
       });
     });
-
-    // Show semi-transparent flower background as flowers fall
     setTimeout(() => { flowerBg.classList.add('visible'); }, 400);
     setTimeout(() => { explosionContainer.innerHTML = ''; }, 4000);
   }, fillTime);
