@@ -805,11 +805,9 @@ function startExplosion() {
   const vh = window.innerHeight;
   const isMobile = vw < 768;
 
-  // Adjust density for mobile — крупнее частицы, но их меньше:
-  // экран покрывается так же полно, а число DOM-узлов/декодирований
-  // падает почти вдвое (было ~90-100 на телефоне, стало ~50-60)
-  const flowerSize = isMobile ? 190 : 160;
-  const overlap = isMobile ? 0.5 : 0.6;
+  // Same density on all devices — keep full coverage
+  const flowerSize = 160;
+  const overlap = 0.6;
   const step = flowerSize * (1 - overlap);
   const cols = Math.ceil(vw / step) + 2;
   const rows = Math.ceil(vh / step) + 2;
@@ -826,7 +824,8 @@ function startExplosion() {
       const img = document.createElement('img');
       img.src = flower.src;
       img.draggable = false;
-      img.decoding = 'sync'; // картинка уже декодирована при предзагрузке
+      img.decoding = 'sync';
+      img.loading = 'eager';
       el.appendChild(img);
 
       if (flower.blend === 'screen') {
@@ -862,11 +861,13 @@ function startExplosion() {
 
   particles.sort((a, b) => a.distFromCenter - b.distFromCenter);
 
-  // Phase 1: expand from center
-  const delayStep = isMobile ? 6 : 8;
+  // Batch particles into groups — reduces layout thrashing on mobile
+  const batchSize = isMobile ? 8 : 15;
+
   particles.forEach((p, i) => {
     const normalizedDist = p.distFromCenter / p.maxDist;
-    const delay = normalizedDist * 800 + (i % 50) * delayStep;
+    const batchIdx = Math.floor(i / batchSize);
+    const delay = normalizedDist * 800 + batchIdx * (isMobile ? 25 : 50) + (i % batchSize) * 3;
     const duration = 1000 + Math.random() * 500;
 
     requestAnimationFrame(() => {
